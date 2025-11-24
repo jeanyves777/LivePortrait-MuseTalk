@@ -19,7 +19,8 @@ WORKDIR /workspace/LivePortrait
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Download pretrained models from HuggingFace
-RUN pip install -U "huggingface_hub[cli]" && \
+# Use compatible huggingface_hub version that works with transformers 4.38.0 and tokenizers 0.15.2
+RUN pip install --no-cache-dir "huggingface_hub>=0.19.3,<1.0" && \
     huggingface-cli download KlingTeam/LivePortrait --local-dir pretrained_weights --exclude "*.git*" "README.md" "docs"
 
 # Copy handler
