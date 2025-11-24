@@ -4,11 +4,10 @@ Facial animation with expression control using LivePortrait.
 
 ## Features
 
-- **Expression Presets**: 7 built-in expressions (neutral, approve, disapprove, smile, sad, surprised, confused)
-- **Custom Driving**: Use custom driving videos for unique animations
-- **Motion Templates**: Generate reusable motion templates for consistent animations
+- **Expression Templates**: 9 built-in expression templates from LivePortrait (neutral, approve, disapprove, smile, sad, surprised, confused, wink, talking)
 - **High Quality**: LivePortrait's efficient portrait animation (12.8ms on RTX 4090)
 - **S3 Integration**: Automatic upload to RunPod S3
+- **Based on Official LivePortrait**: Uses official KlingTeam/LivePortrait repository
 
 ## Deployment to RunPod
 
@@ -46,9 +45,7 @@ docker push your-dockerhub-username/liveportrait:latest
 {
   "input": {
     "source_image_url": "https://example.com/portrait.jpg",
-    "expression": "smile",
-    "driving_video_url": "https://example.com/driving.mp4",
-    "generate_motion_template": true
+    "expression": "smile"
   }
 }
 ```
@@ -56,21 +53,21 @@ docker push your-dockerhub-username/liveportrait:latest
 ### Parameters
 
 - **source_image_url** (required): URL to source portrait image
-- **expression** (optional): Expression preset - neutral, approve, disapprove, smile, sad, surprised, confused (default: "neutral")
-- **driving_video_url** (optional): URL to custom driving video (overrides expression preset)
-- **generate_motion_template** (optional): Generate reusable motion template (default: true)
+- **expression** (optional): Expression template - neutral, approve, disapprove, smile, sad, surprised, confused, wink, talking (default: "neutral")
 
-### Expression Presets
+### Expression Templates
 
-| Expression | Index | Use Case |
-|------------|-------|----------|
-| neutral | 0 | Default, calm talking |
-| approve | 1 | Nodding, agreeing |
-| disapprove | 2 | Shaking head, disagreeing |
-| smile | 3 | Happy, positive content |
-| sad | 4 | Sad, serious content |
-| surprised | 5 | Excited, shocked reactions |
-| confused | 6 | Questioning, uncertain |
+| Expression | Template | Use Case |
+|------------|----------|----------|
+| neutral | d0.mp4 | Default, calm talking |
+| approve | d1.pkl | Nodding, agreeing |
+| disapprove | shake_face.pkl | Shaking head, disagreeing |
+| smile | laugh.pkl | Happy, positive content |
+| sad | aggrieved.pkl | Sad, serious content |
+| surprised | d5.pkl | Excited, shocked reactions |
+| confused | shy.pkl | Questioning, uncertain |
+| wink | wink.pkl | Playful winking |
+| talking | talking.pkl | Natural talking motion |
 
 ### Output
 

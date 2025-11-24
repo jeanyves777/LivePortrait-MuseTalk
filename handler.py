@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LivePortrait RunPod Serverless Handler
-Facial animation with expression control + motion template generation
+Facial animation with expression control using motion templates
 https://github.com/KwaiVGI/LivePortrait
 """
 
@@ -13,10 +13,17 @@ import tempfile
 import shutil
 import requests
 import traceback
-import pickle
 from pathlib import Path
+from dataclasses import dataclass
 
 print("[LivePortrait] Starting handler...")
+
+# Add LivePortrait to path
+sys.path.insert(0, '/workspace/LivePortrait')
+
+from src.config.inference_config import InferenceConfig
+from src.config.crop_config import CropConfig
+from src.live_portrait_pipeline import LivePortraitPipeline
 
 # S3 Configuration
 S3_ACCESS_KEY = os.environ.get('RUNPOD_S3_ACCESS_KEY')
@@ -42,16 +49,52 @@ if S3_ACCESS_KEY and S3_SECRET_KEY:
 # Global model (loaded once)
 live_portrait_pipeline = None
 
-# Expression presets (0-6)
-EXPRESSIONS = {
-    'neutral': 0,
-    'approve': 1,
-    'disapprove': 2,
-    'smile': 3,
-    'sad': 4,
-    'surprised': 5,
-    'confused': 6,
+# Built-in expression templates from LivePortrait
+EXPRESSION_TEMPLATES = {
+    'neutral': '/workspace/LivePortrait/assets/examples/driving/d0.mp4',  # Default neutral
+    'smile': '/workspace/LivePortrait/assets/examples/driving/laugh.pkl',
+    'sad': '/workspace/LivePortrait/assets/examples/driving/aggrieved.pkl',
+    'surprised': '/workspace/LivePortrait/assets/examples/driving/d5.pkl',
+    'approve': '/workspace/LivePortrait/assets/examples/driving/d1.pkl',  # Nodding
+    'disapprove': '/workspace/LivePortrait/assets/examples/driving/shake_face.pkl',
+    'confused': '/workspace/LivePortrait/assets/examples/driving/shy.pkl',
+    'wink': '/workspace/LivePortrait/assets/examples/driving/wink.pkl',
+    'talking': '/workspace/LivePortrait/assets/examples/driving/talking.pkl',
 }
+
+@dataclass
+class SimpleArgs:
+    """Simplified arguments for LivePortrait execution"""
+    source: str
+    driving: str
+    output_dir: str = '/tmp/output'
+    flag_use_half_precision: bool = True
+    flag_crop_driving_video: bool = False
+    device_id: int = 0
+    flag_force_cpu: bool = False
+    flag_normalize_lip: bool = False
+    flag_source_video_eye_retargeting: bool = False
+    flag_eye_retargeting: bool = False
+    flag_lip_retargeting: bool = False
+    flag_stitching: bool = True
+    flag_relative_motion: bool = True
+    flag_pasteback: bool = True
+    flag_do_crop: bool = True
+    driving_option: str = "expression-friendly"
+    driving_multiplier: float = 1.0
+    driving_smooth_observation_variance: float = 3e-7
+    audio_priority: str = 'driving'
+    animation_region: str = "all"
+    det_thresh: float = 0.15
+    scale: float = 2.3
+    vx_ratio: float = 0
+    vy_ratio: float = -0.125
+    flag_do_rot: bool = True
+    source_max_dim: int = 1280
+    source_division: int = 2
+    scale_crop_driving_video: float = 2.2
+    vx_ratio_crop_driving_video: float = 0.0
+    vy_ratio_crop_driving_video: float = -0.1
 
 def initialize_liveportrait():
     """Initialize LivePortrait pipeline"""
@@ -60,23 +103,14 @@ def initialize_liveportrait():
     try:
         print("[LivePortrait] Loading models...")
 
-        # Add LivePortrait to path
-        sys.path.insert(0, '/workspace/LivePortrait')
-
-        from src.config.inference_config import InferenceConfig
-        from src.live_portrait_pipeline import LivePortraitPipeline
-
         # Initialize configuration
-        cfg = InferenceConfig()
-
-        # Set device
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"[LivePortrait] Using device: {device}")
+        inference_cfg = InferenceConfig()
+        crop_cfg = CropConfig()
 
         # Initialize pipeline
         live_portrait_pipeline = LivePortraitPipeline(
-            inference_cfg=cfg,
-            device=device
+            inference_cfg=inference_cfg,
+            crop_cfg=crop_cfg
         )
 
         print("[LivePortrait] ✅ Pipeline loaded successfully")
@@ -135,73 +169,60 @@ def upload_to_s3(local_path, object_name=None):
 
 def generate_animation(
     source_image_path,
-    driving_video_path=None,
     expression='neutral',
-    output_video_path=None,
-    output_motion_template_path=None
+    output_dir=None
 ):
     """
     Generate facial animation using LivePortrait
 
     Args:
         source_image_path: Path to source portrait image
-        driving_video_path: Optional path to driving video (if None, uses expression preset)
         expression: Expression name (neutral, smile, sad, etc.)
-        output_video_path: Path to save output video
-        output_motion_template_path: Path to save motion template (.pkl)
+        output_dir: Directory to save output
 
     Returns:
         (video_path, motion_template_path, error)
     """
     try:
-        if not initialize_liveportrait():
-            return None, None, "LivePortrait pipeline not available"
+        if not live_portrait_pipeline:
+            if not initialize_liveportrait():
+                return None, None, "LivePortrait pipeline not available"
 
         print(f"[LivePortrait] Generating animation: expression={expression}")
 
-        # Prepare arguments
-        args = {
-            'source_image': source_image_path,
-            'flag_relative_motion': True,
-            'flag_do_crop': True,
-            'flag_pasteback': True,
-        }
+        # Get expression template
+        driving_template = EXPRESSION_TEMPLATES.get(expression.lower(), EXPRESSION_TEMPLATES['neutral'])
 
-        # Use driving video if provided, otherwise use expression preset
-        if driving_video_path and os.path.exists(driving_video_path):
-            args['driving_video'] = driving_video_path
-            print(f"[LivePortrait] Using driving video: {driving_video_path}")
-        else:
-            # Use built-in expression template
-            expression_idx = EXPRESSIONS.get(expression, 0)
-            args['expression_index'] = expression_idx
-            print(f"[LivePortrait] Using expression preset: {expression} (index {expression_idx})")
+        if not os.path.exists(driving_template):
+            return None, None, f"Expression template not found: {driving_template}"
+
+        # Create output directory
+        if output_dir is None:
+            output_dir = tempfile.mkdtemp()
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Prepare arguments
+        args = SimpleArgs(
+            source=source_image_path,
+            driving=driving_template,
+            output_dir=output_dir,
+        )
 
         # Generate animation
-        result = live_portrait_pipeline.execute(args)
+        print(f"[LivePortrait] Running pipeline...")
+        live_portrait_pipeline.execute(args)
 
-        # Save output video
-        if output_video_path and 'video' in result:
-            import cv2
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(
-                output_video_path,
-                fourcc,
-                result.get('fps', 25.0),
-                (result['video'][0].shape[1], result['video'][0].shape[0])
-            )
-            for frame in result['video']:
-                out.write(frame)
-            out.release()
-            print(f"[LivePortrait] ✅ Video saved: {output_video_path}")
+        # Find output file
+        output_files = list(Path(output_dir).glob("*.mp4"))
+        if not output_files:
+            return None, None, "No output video generated"
 
-        # Save motion template
-        if output_motion_template_path and 'motion_template' in result:
-            with open(output_motion_template_path, 'wb') as f:
-                pickle.dump(result['motion_template'], f)
-            print(f"[LivePortrait] ✅ Motion template saved: {output_motion_template_path}")
+        output_video = str(output_files[0])
+        print(f"[LivePortrait] ✅ Video generated: {output_video}")
 
-        return output_video_path, output_motion_template_path, None
+        # Note: Motion template saving would need to be added to LivePortrait pipeline
+        # For now, we'll just return the video
+        return output_video, None, None
 
     except Exception as e:
         error = f"Animation generation failed: {str(e)}"
@@ -212,14 +233,18 @@ def generate_animation(
 def handler(job):
     """
     RunPod serverless handler
+
+    Expected input:
+    {
+        "source_image_url": "https://example.com/portrait.jpg",
+        "expression": "smile"  // optional, default: "neutral"
+    }
     """
     job_input = job.get('input', {})
 
     # Get inputs
     source_image_url = job_input.get('source_image_url')
-    driving_video_url = job_input.get('driving_video_url')  # Optional
     expression = job_input.get('expression', 'neutral')
-    generate_motion_template = job_input.get('generate_motion_template', True)
 
     if not source_image_url:
         return {"error": "source_image_url is required"}
@@ -227,7 +252,6 @@ def handler(job):
     print(f"\n[Job] Starting LivePortrait animation")
     print(f"[Job] Source image: {source_image_url}")
     print(f"[Job] Expression: {expression}")
-    print(f"[Job] Driving video: {driving_video_url or 'None (using expression preset)'}")
 
     # Create temp directory
     temp_dir = tempfile.mkdtemp()
@@ -239,24 +263,12 @@ def handler(job):
         if error:
             return {"error": f"Failed to download source image: {error}"}
 
-        # Download driving video if provided
-        driving_video_path = None
-        if driving_video_url:
-            driving_video_path = os.path.join(temp_dir, 'driving.mp4')
-            driving_video_path, error = download_file(driving_video_url, driving_video_path)
-            if error:
-                return {"error": f"Failed to download driving video: {error}"}
-
         # Generate animation
-        output_video_path = os.path.join(temp_dir, 'output.mp4')
-        output_motion_template_path = os.path.join(temp_dir, 'motion_template.pkl') if generate_motion_template else None
-
+        output_dir = os.path.join(temp_dir, 'output')
         video_path, template_path, error = generate_animation(
             source_image_path=source_image_path,
-            driving_video_path=driving_video_path,
             expression=expression,
-            output_video_path=output_video_path,
-            output_motion_template_path=output_motion_template_path
+            output_dir=output_dir
         )
 
         if error:
